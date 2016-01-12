@@ -66,7 +66,7 @@ This generates the vis.js library in the folder `./dist`.
 - Copy the `examples` folder from the `master` branch to the `github-pages` branch.
 - Create a packaged version of vis.js. Go to the `master` branch and run:
 
-        zip vis.zip dist docs examples README.md HISTORY.md LICENSE* NOTICE -r
+        zip vis.zip dist docs examples README.md HISTORY.md CONTRIBUTING.md LICENSE* NOTICE -r
 
 - Move the created zip file `vis.zip` to the `download` folder in the
   `github-pages` branch. TODO: this should be automated.
@@ -74,9 +74,7 @@ This generates the vis.js library in the folder `./dist`.
 - Check if there are new or updated examples, and update the gallery screenshots
   accordingly.
 
-- Go to the `github-pages` branch and run the following script:
-
-        node updateversion.js
+- Update the library version number in the index.html page.
 
 - Commit the changes in the `gh-pages` branch.
 
