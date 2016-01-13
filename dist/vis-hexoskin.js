@@ -680,9 +680,17 @@ DataSet.prototype._filterFields = function (item, fields) {
 
   var filteredItem = {};
 
-  for (var field in item) {
-    if (item.hasOwnProperty(field) && (fields.indexOf(field) != -1)) {
-      filteredItem[field] = item[field];
+  if(Array.isArray(fields)){
+    for (var field in item) {
+      if (item.hasOwnProperty(field) && (fields.indexOf(field) != -1)) {
+        filteredItem[field] = item[field];
+      }
+    }
+  }else{
+    for (var field in item) {
+      if (item.hasOwnProperty(field) && fields.hasOwnProperty(field)) {
+        filteredItem[fields[field]] = item[field];
+      }
     }
   }
 
@@ -1275,12 +1283,13 @@ DataView.prototype.getDataSet = function () {
  * @private
  */
 DataView.prototype._onEvent = function (event, params, senderId) {
-  var i, len, id, item,
-      ids = params && params.items,
-      data = this._data,
-      added = [],
-      updated = [],
-      removed = [];
+  var i, len, id, item;
+  var ids = params && params.items;
+  var data = this._data;
+  var updatedData = [];
+  var added = [];
+  var updated = [];
+  var removed = [];
 
   if (ids && data) {
     switch (event) {
@@ -1307,6 +1316,7 @@ DataView.prototype._onEvent = function (event, params, senderId) {
           if (item) {
             if (this._ids[id]) {
               updated.push(id);
+              updatedData.push(params.data[i]);
             }
             else {
               this._ids[id] = true;
@@ -1345,7 +1355,7 @@ DataView.prototype._onEvent = function (event, params, senderId) {
       this._trigger('add', {items: added}, senderId);
     }
     if (updated.length) {
-      this._trigger('update', {items: updated}, senderId);
+      this._trigger('update', {items: updated, data: updatedData}, senderId);
     }
     if (removed.length) {
       this._trigger('remove', {items: removed}, senderId);
@@ -1773,8 +1783,10 @@ var DataSet = require('../DataSet');
 var DataView = require('../DataView');
 var Range = require('./Range');
 var ItemSet = require('./component/ItemSet');
+var TimeAxis = require('./component/TimeAxis');
 var Activator = require('../shared/Activator');
 var DateUtil = require('./DateUtil');
+var CustomTime = require('./component/CustomTime');
 
 /**
  * Create a timeline visualization
@@ -1793,7 +1805,7 @@ Emitter(Core.prototype);
  * top, bottom, content, and background panel.
  * @param {Element} container  The container element where the Core will
  *                             be attached.
- * @private
+ * @protected
  */
 Core.prototype._create = function (container) {
   this.dom = {};
@@ -1956,8 +1968,39 @@ Core.prototype._create = function (container) {
 Core.prototype.setOptions = function (options) {
   if (options) {
     // copy the known options
-    var fields = ['width', 'height', 'minHeight', 'maxHeight', 'autoResize', 'start', 'end', 'orientation', 'clickToUse', 'dataAttributes', 'hiddenDates'];
+    var fields = ['width', 'height', 'minHeight', 'maxHeight', 'autoResize', 'start', 'end', 'clickToUse', 'dataAttributes', 'hiddenDates'];
     util.selectiveExtend(fields, this.options, options);
+
+    if ('orientation' in options) {
+      if (typeof options.orientation === 'string') {
+        this.options.orientation = options.orientation;
+      }
+      else if (typeof options.orientation === 'object' && 'axis' in options.orientation) {
+        this.options.orientation = options.orientation.axis;
+      }
+    }
+
+    if (this.options.orientation === 'both') {
+      if (!this.timeAxis2) {
+        var timeAxis2 = this.timeAxis2 = new TimeAxis(this.body);
+        timeAxis2.setOptions = function (options) {
+          var _options = options ? util.extend({}, options) : {};
+          _options.orientation = 'top'; // override the orientation option, always top
+          TimeAxis.prototype.setOptions.call(timeAxis2, _options);
+        };
+        this.components.push(timeAxis2);
+      }
+    }
+    else {
+      if (this.timeAxis2) {
+        var index = this.components.indexOf(this.timeAxis2);
+        if (index !== -1) {
+          this.components.splice(index, 1);
+        }
+        this.timeAxis2.destroy();
+        this.timeAxis2 = null;
+      }
+    }
 
     if ('hiddenDates' in this.options) {
       DateUtil.convertHiddenOptions(this.body, this.options.hiddenDates);
@@ -1985,11 +2028,6 @@ Core.prototype.setOptions = function (options) {
   this.components.forEach(function (component) {
     component.setOptions(options);
   });
-
-  // TODO: remove deprecation error one day (deprecated since version 0.8.0)
-  if (options && options.order) {
-    throw new Error('Option order is deprecated. There is no replacement for this feature.');
-  }
 
   // redraw everything
   this._redraw();
@@ -2049,25 +2087,123 @@ Core.prototype.destroy = function () {
 /**
  * Set a custom time bar
  * @param {Date} time
+ * @param {int} id
  */
-Core.prototype.setCustomTime = function (time) {
+Core.prototype.setCustomTime = function (time, id) {
   if (!this.customTime) {
     throw new Error('Cannot get custom time: Custom time bar is not enabled');
   }
 
-  this.customTime.setCustomTime(time);
+  var barId = id || 0;
+
+  this.components.forEach(function (element, index, components) {
+    if (element instanceof CustomTime && element.options.id === barId) {
+      element.setCustomTime(time);
+    }
+  });
 };
 
 /**
  * Retrieve the current custom time.
  * @return {Date} customTime
+ * @param {int} id
  */
-Core.prototype.getCustomTime = function() {
+Core.prototype.getCustomTime = function(id) {
   if (!this.customTime) {
     throw new Error('Cannot get custom time: Custom time bar is not enabled');
   }
 
-  return this.customTime.getCustomTime();
+  var barId = id || 0,
+      customTime = this.customTime.getCustomTime();
+
+  this.components.forEach(function (element, index, components) {
+    if (element instanceof CustomTime && element.options.id === barId) {
+      customTime = element.getCustomTime();
+    }
+  });
+
+  return customTime;
+};
+
+/**
+ * Add custom vertical bar
+ * @param {Date | String | Number} time  A Date, unix timestamp, or
+ *                                      ISO date string. Time point where the new bar should be placed
+ * @param {Number | String} ID of the new bar
+ * @return {Number | String} ID of the new bar
+ */
+Core.prototype.addCustomTime = function (time, id) {
+  if (!this.currentTime) {
+    throw new Error('Option showCurrentTime must be true');
+  }
+
+  if (time === undefined) {
+    throw new Error('Time parameter for the custom bar must be provided');
+  }
+
+  var ts = util.convert(time, 'Date').valueOf(),
+      numIds, customTime, customBarId;
+
+  // All bar IDs are kept in 1 array, mixed types
+  // Bar with ID 0 is the default bar.
+  if (!this.customBarIds || this.customBarIds.constructor !== Array) {
+    this.customBarIds = [0];
+  }
+
+  // If the ID is not provided, generate one, otherwise just use it
+  if (id === undefined) {
+
+    numIds = this.customBarIds.filter(function (element) {
+      return util.isNumber(element);
+    });
+
+    customBarId = numIds.length > 0 ? Math.max.apply(null, numIds) + 1 : 1;
+
+  } else {
+    
+    // Check for duplicates
+    this.customBarIds.forEach(function (element) {
+      if (element === id) {
+        throw new Error('Custom time ID already exists');
+      }
+    });
+
+    customBarId = id;
+  }
+
+  this.customBarIds.push(customBarId);
+
+  customTime = new CustomTime(this.body, {
+    showCustomTime : true,
+    time : ts,
+    id : customBarId
+  });
+
+  this.components.push(customTime);
+  this.redraw();
+
+  return customBarId;
+};
+
+/**
+ * Remove previously added custom bar
+ * @param {int} id ID of the custom bar to be removed
+ * @return {boolean} True if the bar exists and is removed, false otherwise
+ */
+Core.prototype.removeCustomTime = function (id) {
+
+  var me = this;
+
+  this.components.forEach(function (bar, index, components) {
+    if (bar instanceof CustomTime && bar.options.id === id) {
+      // Only the lines added by the user will be removed
+      if (bar.options.id !== 0) {
+        me.customBarIds.splice(me.customBarIds.indexOf(id), 1);
+        components.splice(index, 1);
+        bar.destroy();
+      }
+    }
+  });
 };
 
 
@@ -2438,7 +2574,7 @@ Core.prototype.getCurrentTime = function() {
  * Convert a position on screen (pixels) to a datetime
  * @param {int}     x    Position on the screen in pixels
  * @return {Date}   time The datetime the corresponds with given position x
- * @private
+ * @protected
  */
 // TODO: move this function to Range
 Core.prototype._toTime = function(x) {
@@ -2449,7 +2585,7 @@ Core.prototype._toTime = function(x) {
  * Convert a position on the global screen (pixels) to a datetime
  * @param {int}     x    Position on the screen in pixels
  * @return {Date}   time The datetime the corresponds with given position x
- * @private
+ * @protected
  */
 // TODO: move this function to Range
 Core.prototype._toGlobalTime = function(x) {
@@ -2463,7 +2599,7 @@ Core.prototype._toGlobalTime = function(x) {
  * @param {Date}   time A date
  * @return {int}   x    The position on the screen in pixels which corresponds
  *                      with the given date.
- * @private
+ * @protected
  */
 // TODO: move this function to Range
 Core.prototype._toScreen = function(time) {
@@ -2478,7 +2614,7 @@ Core.prototype._toScreen = function(time) {
  * @param {Date}   time A date
  * @return {int}   x    The position on root in pixels which corresponds
  *                      with the given date.
- * @private
+ * @protected
  */
 // TODO: move this function to Range
 Core.prototype._toGlobalScreen = function(time) {
@@ -2650,7 +2786,7 @@ Core.prototype._getScrollTop = function () {
 
 module.exports = Core;
 
-},{"../DataSet":2,"../DataView":3,"../module/hammer":6,"../shared/Activator":8,"../util":28,"./DateUtil":10,"./Range":11,"./component/ItemSet":20,"emitter-component":29}],10:[function(require,module,exports){
+},{"../DataSet":2,"../DataView":3,"../module/hammer":6,"../shared/Activator":8,"../util":28,"./DateUtil":10,"./Range":11,"./component/CustomTime":18,"./component/ItemSet":20,"./component/TimeAxis":21,"emitter-component":29}],10:[function(require,module,exports){
 /**
  * Created by Alex on 10/3/2014.
  */
@@ -4548,8 +4684,8 @@ var ItemSet = require('./component/ItemSet');
 /**
  * Create a timeline visualization
  * @param {HTMLElement} container
- * @param {vis.DataSet | Array | google.visualization.DataTable} [items]
- * @param {vis.DataSet | Array | google.visualization.DataTable} [groups]
+ * @param {vis.DataSet | vis.DataView | Array | google.visualization.DataTable} [items]
+ * @param {vis.DataSet | vis.DataView | Array | google.visualization.DataTable} [groups]
  * @param {Object} [options]  See Timeline.setOptions for the available options.
  * @constructor
  * @extends Core
@@ -4560,7 +4696,7 @@ function Timeline (container, items, groups, options) {
   }
 
   // if the third element is options, the forth is groups (optionally);
-  if (!(Array.isArray(groups) || groups instanceof DataSet) && groups instanceof Object) {
+  if (!(Array.isArray(groups) || groups instanceof DataSet || groups instanceof DataView) && groups instanceof Object) {
     var forthArgument = options;
     options = groups;
     groups = forthArgument;
@@ -4573,7 +4709,7 @@ function Timeline (container, items, groups, options) {
 
     autoResize: true,
 
-    orientation: 'bottom',
+    orientation: 'bottom',  // axis orientation: 'bottom', 'top', or 'both'
     width: null,
     height: null,
     maxHeight: null,
@@ -4618,6 +4754,7 @@ function Timeline (container, items, groups, options) {
 
   // time axis
   this.timeAxis = new TimeAxis(this.body);
+  this.timeAxis2 = null; // used in case of orientation option 'both'
   this.components.push(this.timeAxis);
 
   // current time bar
@@ -4635,6 +4772,16 @@ function Timeline (container, items, groups, options) {
 
   this.itemsData = null;      // DataSet
   this.groupsData = null;     // DataSet
+
+  this.on('tap', function (event) {
+    me.emit('click', me.getEventProperties(event))
+  });
+  this.on('doubletap', function (event) {
+    me.emit('doubleClick', me.getEventProperties(event))
+  });
+  this.dom.root.oncontextmenu = function (event) {
+    me.emit('contextmenu', me.getEventProperties(event))
+  };
 
   // apply options
   if (options) {
@@ -4860,6 +5007,49 @@ Timeline.prototype.getItemRange = function() {
   };
 };
 
+/**
+ * Generate Timeline related information from an event
+ * @param {Event} event
+ * @return {Object} An object with related information, like on which area
+ *                  The event happened, whether clicked on an item, etc.
+ */
+Timeline.prototype.getEventProperties = function (event) {
+  var item  = this.itemSet.itemFromTarget(event);
+  var group = this.itemSet.groupFromTarget(event);
+  var pageX = event.gesture ? event.gesture.center.pageX : event.pageX;
+  var pageY = event.gesture ? event.gesture.center.pageY : event.pageY;
+  var x = pageX - util.getAbsoluteLeft(this.dom.centerContainer);
+  var y = pageY - util.getAbsoluteTop(this.dom.centerContainer);
+
+  var snap = this.itemSet.options.snap || null;
+  var scale = this.body.util.getScale();
+  var step = this.body.util.getStep();
+  var time = this._toTime(x);
+  var snappedTime = snap ? snap(time, scale, step) : time;
+
+  var element = util.getTarget(event);
+  var what = null;
+  if (item != null)                                                    {what = 'item';}
+  else if (util.hasParent(element, this.timeAxis.dom.foreground))      {what = 'axis';}
+  else if (this.timeAxis2 && util.hasParent(element, this.timeAxis2.dom.foreground)) {what = 'axis';}
+  else if (util.hasParent(element, this.itemSet.dom.labelSet))         {what = 'group-label';}
+  else if (util.hasParent(element, this.customTime.bar))               {what = 'custom-time';} // TODO: fix for multiple custom time bars
+  else if (util.hasParent(element, this.currentTime.bar))              {what = 'current-time';}
+  else if (util.hasParent(element, this.dom.center))                   {what = 'background';}
+
+  return {
+    event: event,
+    item: item ? item.id : null,
+    group: group ? group.groupId : null,
+    what: what,
+    pageX: pageX,
+    pageY: pageY,
+    x: x,
+    y: y,
+    time: time,
+    snappedTime: snappedTime
+  }
+};
 
 module.exports = Timeline;
 
@@ -5166,11 +5356,17 @@ function CustomTime (body, options) {
   this.defaultOptions = {
     showCustomTime: false,
     locales: locales,
-    locale: 'en'
+    locale: 'en',
+    id: 0
   };
   this.options = util.extend({}, this.defaultOptions);
 
-  this.customTime = new Date();
+  if (options && options.time) {
+    this.customTime = options.time;
+  } else {
+    this.customTime = new Date();  
+  }
+  
   this.eventParams = {}; // stores state parameters while dragging the bar
 
   // create the DOM
@@ -5189,7 +5385,12 @@ CustomTime.prototype = new Component();
 CustomTime.prototype.setOptions = function(options) {
   if (options) {
     // copy all options that we know
-    util.selectiveExtend(['showCustomTime', 'locale', 'locales'], this.options, options);
+    util.selectiveExtend(['showCustomTime', 'locale', 'locales', 'id'], this.options, options);
+
+    // Triggered by addCustomTimeBar, redraw to add new bar
+    if (this.options.id) {
+      this.redraw();
+    }
   }
 };
 
@@ -5315,6 +5516,7 @@ CustomTime.prototype._onDrag = function (event) {
 
   // fire a timechange event
   this.body.emitter.emit('timechange', {
+    id: this.options.id,
     time: new Date(this.customTime.valueOf())
   });
 
@@ -5332,6 +5534,7 @@ CustomTime.prototype._onDragEnd = function (event) {
 
   // fire a timechanged event
   this.body.emitter.emit('timechanged', {
+    id: this.options.id,
     time: new Date(this.customTime.valueOf())
   });
 
@@ -5492,8 +5695,6 @@ Group.prototype.getLabelWidth = function() {
 Group.prototype.redraw = function(range, margin, restack) {
   var resized = false;
 
-  this.visibleItems = this._updateVisibleItems(this.orderedItems, this.visibleItems, range);
-
   // force recalculation of the height of the items when the marker height changed
   // (due to the Timeline being attached to the DOM or changed from display:none to visible)
   var markerHeight = this.dom.marker.clientHeight;
@@ -5509,11 +5710,42 @@ Group.prototype.redraw = function(range, margin, restack) {
   }
 
   // reposition visible items vertically
-  if (this.itemSet.options.stack) { // TODO: ugly way to access options...
-    stack.stack(this.visibleItems, margin, restack);
+  if (typeof this.itemSet.options.order === 'function') {
+    // a custom order function
+
+    if (restack) {
+      // brute force restack of all items
+
+      // show all items
+      var me = this;
+      var limitSize = false;
+      util.forEach(this.items, function (item) {
+        if (!item.displayed) {
+          item.redraw();
+          me.visibleItems.push(item);
+        }
+        item.repositionX(limitSize);
+      });
+
+      // order all items and force a restacking
+      var customOrderedItems = this.orderedItems.byStart.slice().sort(function (a, b) {
+        return me.itemSet.options.order(a.data, b.data);
+      });
+      stack.stack(customOrderedItems, margin, true /* restack=true */);
+    }
+
+    this.visibleItems = this._updateVisibleItems(this.orderedItems, this.visibleItems, range);
   }
-  else { // no stacking
-    stack.nostack(this.visibleItems, margin, this.subgroups);
+  else {
+    // no custom order function, lazy stacking
+    this.visibleItems = this._updateVisibleItems(this.orderedItems, this.visibleItems, range);
+
+    if (this.itemSet.options.stack) { // TODO: ugly way to access options...
+      stack.stack(this.visibleItems, margin, restack);
+    }
+    else { // no stacking
+      stack.nostack(this.visibleItems, margin, this.subgroups);
+    }
   }
 
   // recalculate the height of the group
@@ -5584,7 +5816,7 @@ Group.prototype._calculateHeight = function (margin) {
     height = max + margin.item.vertical / 2;
   }
   else {
-    height = margin.axis + margin.item.vertical;
+    height = 0;
   }
   height = Math.max(height, this.props.label.height);
 
@@ -5944,7 +6176,7 @@ function ItemSet(body, options) {
 
   this.defaultOptions = {
     type: null,  // 'box', 'point', 'range', 'background'
-    orientation: 'bottom',  // 'top' or 'bottom'
+    orientation: 'bottom',  // item orientation: 'top' or 'bottom'
     align: 'auto', // alignment of box items
     stack: true,
     groupOrder: null,
@@ -6194,8 +6426,17 @@ ItemSet.prototype._create = function(){
 ItemSet.prototype.setOptions = function(options) {
   if (options) {
     // copy all options that we know
-    var fields = ['type', 'align', 'orientation', 'padding', 'stack', 'selectable', 'groupOrder', 'dataAttributes', 'template','hide', 'snap'];
+    var fields = ['type', 'align', 'order', 'padding', 'stack', 'selectable', 'groupOrder', 'dataAttributes', 'template','hide', 'snap'];
     util.selectiveExtend(fields, this.options, options);
+
+    if ('orientation' in options) {
+      if (typeof options.orientation === 'string') {
+        this.options.orientation = options.orientation;
+      }
+      else if (typeof options.orientation === 'object' && 'item' in options.orientation) {
+        this.options.orientation = options.orientation.item;
+      }
+    }
 
     if ('margin' in options) {
       if (typeof options.margin === 'number') {
@@ -7004,7 +7245,7 @@ ItemSet.prototype._constructByEndArray = function(array) {
  */
 ItemSet.prototype._onTouch = function (event) {
   // store the touched item, used in _onDragStart
-  this.touchParams.item = ItemSet.itemFromTarget(event);
+  this.touchParams.item = this.itemFromTarget(event);
 };
 
 /**
@@ -7028,30 +7269,20 @@ ItemSet.prototype._onDragStart = function (event) {
     if (dragLeftItem) {
       props = {
         item: dragLeftItem,
-        initialX: event.gesture.center.clientX
+        initialX: event.gesture.center.pageX,
+        dragLeft:  true,
+        data: util.extend({}, item.data) // clone the items data
       };
-
-      if (me.options.editable.updateTime) {
-        props.start = item.data.start.valueOf();
-      }
-      if (me.options.editable.updateGroup) {
-        if ('group' in item.data) props.group = item.data.group;
-      }
 
       this.touchParams.itemProps = [props];
     }
     else if (dragRightItem) {
       props = {
         item: dragRightItem,
-        initialX: event.gesture.center.clientX
+        initialX: event.gesture.center.pageX,
+        dragRight: true,
+        data: util.extend({}, item.data) // clone the items data
       };
-
-      if (me.options.editable.updateTime) {
-        props.end = item.data.end.valueOf();
-      }
-      if (me.options.editable.updateGroup) {
-        if ('group' in item.data) props.group = item.data.group;
-      }
 
       this.touchParams.itemProps = [props];
     }
@@ -7060,23 +7291,9 @@ ItemSet.prototype._onDragStart = function (event) {
         var item = me.items[id];
         var props = {
           item: item,
-          initialX: event.gesture.center.clientX
+          initialX: event.gesture.center.pageX,
+          data: util.extend({}, item.data) // clone the items data
         };
-
-        if (me.options.editable.updateTime) {
-          if ('start' in item.data) {
-            props.start = item.data.start.valueOf();
-
-            if ('end' in item.data) {
-              // we store a duration here in order not to change the width
-              // of the item when moving it.
-              props.duration = item.data.end.valueOf() - props.start;
-            }
-          }
-        }
-        if (me.options.editable.updateGroup) {
-          if ('group' in item.data) props.group = item.data.group;
-        }
 
         return props;
       });
@@ -7084,6 +7301,56 @@ ItemSet.prototype._onDragStart = function (event) {
 
     event.stopPropagation();
   }
+  else if (this.options.editable.add && event.gesture.srcEvent.ctrlKey) {
+    // create a new range item when dragging with ctrl key down
+    this._onDragStartAddItem(event);
+  }
+};
+
+/**
+ * Start creating a new range item by dragging.
+ * @param {Event} event
+ * @private
+ */
+ItemSet.prototype._onDragStartAddItem = function (event) {
+  var snap = this.options.snap || null;
+  var xAbs = util.getAbsoluteLeft(this.dom.frame);
+  var x = event.gesture.center.pageX - xAbs - 10;  // minus 10 to compensate for the drag starting as soon as you've moved 10px
+  var time = this.body.util.toTime(x);
+  var scale = this.body.util.getScale();
+  var step = this.body.util.getStep();
+  var start = snap ? snap(time, scale, step) : start;
+  var end = start;
+
+  var itemData = {
+    type: 'range',
+    start: start,
+    end: end,
+    content: 'new item'
+  };
+
+  var id = util.randomUUID();
+  itemData[this.itemsData._fieldId] = id;
+
+  var group = this.groupFromTarget(event);
+  if (group) {
+    itemData.group = group.groupId;
+  }
+
+  var newItem = new RangeItem(itemData, this.conversion, this.options);
+  newItem.id = id; // TODO: not so nice setting id afterwards
+  newItem.data = itemData;
+  this._addItem(newItem);
+
+  var props = {
+    item: newItem,
+    dragRight: true,
+    initialX: event.gesture.center.pageX,
+    data: util.extend({}, itemData)
+  };
+  this.touchParams.itemProps = [props];
+
+  event.stopPropagation();
 };
 
 /**
@@ -7095,6 +7362,8 @@ ItemSet.prototype._onDrag = function (event) {
   event.preventDefault();
 
   if (this.touchParams.itemProps) {
+    event.stopPropagation();
+
     var me = this;
     var snap = this.options.snap || null;
     var xOffset = this.body.dom.root.offsetLeft + this.body.domProps.left.width;
@@ -7103,58 +7372,69 @@ ItemSet.prototype._onDrag = function (event) {
 
     // move
     this.touchParams.itemProps.forEach(function (props) {
-      var newProps = {};
-      var current = me.body.util.toTime(event.gesture.center.clientX - xOffset);
+      var current = me.body.util.toTime(event.gesture.center.pageX - xOffset);
       var initial = me.body.util.toTime(props.initialX - xOffset);
       var offset = current - initial;
 
-      if ('start' in props) {
-        var start = new Date(props.start + offset);
-        newProps.start = snap ? snap(start, scale, step) : start;
+      var itemData = util.extend({}, props.item.data); // clone the data
+
+      if (me.options.editable.updateTime) {
+        if (props.dragLeft) {
+          // drag left side of a range item
+          if (itemData.start != undefined) {
+            var initialStart = util.convert(props.data.start, 'Date');
+            var start = new Date(initialStart.valueOf() + offset);
+            itemData.start = snap ? snap(start, scale, step) : start;
+          }
+        }
+        else if (props.dragRight) {
+          // drag right side of a range item
+          if (itemData.end != undefined) {
+            var initialEnd = util.convert(props.data.end, 'Date');
+            var end = new Date(initialEnd.valueOf() + offset);
+            itemData.end = snap ? snap(end, scale, step) : end;
+          }
+        }
+        else {
+          // drag both start and end
+          if (itemData.start != undefined) {
+            var initialStart = util.convert(props.data.start, 'Date').valueOf();
+            var start = new Date(initialStart + offset);
+
+            if (itemData.end != undefined) {
+              var initialEnd = util.convert(props.data.end, 'Date');
+              var duration  = initialEnd.valueOf() - initialStart.valueOf();
+
+              itemData.start = snap ? snap(start, scale, step) : start;
+              itemData.end   = new Date(itemData.start.valueOf() + duration);
+            }
+            else {
+              itemData.start = snap ? snap(start, scale, step) : start;
+            }
+          }
+        }
       }
 
-      if ('end' in props) {
-        var end = new Date(props.end + offset);
-        newProps.end = snap ? snap(end, scale, step) : end;
-      }
-      else if ('duration' in props) {
-        newProps.end = new Date(newProps.start.valueOf() + props.duration);
-      }
-
-      if ('group' in props) {
-        // drag from one group to another
-        var group = me.groupFromTarget(event);
-        newProps.group = group && group.groupId;
+      if (me.options.editable.updateGroup && (!props.dragLeft && !props.dragRight)) {
+        if (itemData.group != undefined) {
+          // drag from one group to another
+          var group = me.groupFromTarget(event);
+          if (group) {
+            itemData.group = group.groupId;
+          }
+        }
       }
 
       // confirm moving the item
-      var itemData = util.extend({}, props.item.data, newProps);
       me.options.onMoving(itemData, function (itemData) {
         if (itemData) {
-          me._updateItemProps(props.item, itemData);
+          props.item.setData(itemData);
         }
       });
     });
 
     this.stackDirty = true; // force re-stacking of all items next redraw
     this.body.emitter.emit('change');
-
-    event.stopPropagation();
-  }
-};
-
-/**
- * Update an items properties
- * @param {Item} item
- * @param {Object} props  Can contain properties start, end, and group.
- * @private
- */
-ItemSet.prototype._updateItemProps = function(item, props) {
-  // TODO: copy all properties from props to item? (also new ones)
-  if ('start' in props) item.data.start = props.start;
-  if ('end' in props)   item.data.end   = props.end;
-  if ('group' in props && item.data.group != props.group) {
-    this._moveToGroup(item, props.group)
   }
 };
 
@@ -7183,38 +7463,38 @@ ItemSet.prototype._moveToGroup = function(item, groupId) {
  * @private
  */
 ItemSet.prototype._onDragEnd = function (event) {
-  event.preventDefault()
+  event.preventDefault();
 
   if (this.touchParams.itemProps) {
+    event.stopPropagation();
+
     // prepare a change set for the changed items
-    var changes = [],
-        me = this,
-        dataset = this.itemsData.getDataSet();
+    var changes = [];
+    var me = this;
+    var dataset = this.itemsData.getDataSet();
 
     var itemProps = this.touchParams.itemProps ;
     this.touchParams.itemProps = null;
     itemProps.forEach(function (props) {
-      var id = props.item.id,
-          itemData = me.itemsData.get(id, me.itemOptions);
+      var id = props.item.id;
+      var exists = me.itemsData.get(id, me.itemOptions) != null;
 
-      var changed = false;
-      if ('start' in props.item.data) {
-        changed = (props.start != props.item.data.start.valueOf());
-        itemData.start = util.convert(props.item.data.start,
-                dataset._options.type && dataset._options.type.start || 'Date');
-      }
-      if ('end' in props.item.data) {
-        changed = changed  || (props.end != props.item.data.end.valueOf());
-        itemData.end = util.convert(props.item.data.end,
-                dataset._options.type && dataset._options.type.end || 'Date');
-      }
-      if ('group' in props.item.data) {
-        changed = changed  || (props.group != props.item.data.group);
-        itemData.group = props.item.data.group;
-      }
+      if (!exists) {
+        // add a new item
+        me.options.onAdd(props.item.data, function (itemData) {
+          me._removeItem(props.item); // remove temporary item
+          if (itemData) {
+            me.itemsData.getDataSet().add(itemData);
+          }
 
-      // only apply changes when start or end is actually changed
-      if (changed) {
+          // force re-stacking of all items next redraw
+          me.stackDirty = true;
+          me.body.emitter.emit('change');
+        });
+      }
+      else {
+        // update existing item
+        var itemData = util.extend({}, props.item.data); // clone the data
         me.options.onMove(itemData, function (itemData) {
           if (itemData) {
             // apply changes
@@ -7223,7 +7503,7 @@ ItemSet.prototype._onDragEnd = function (event) {
           }
           else {
             // restore original values
-            me._updateItemProps(props.item, props);
+            props.item.setData(props.data);
 
             me.stackDirty = true; // force re-stacking of all items next redraw
             me.body.emitter.emit('change');
@@ -7236,8 +7516,6 @@ ItemSet.prototype._onDragEnd = function (event) {
     if (changes.length) {
       dataset.update(changes);
     }
-
-    event.stopPropagation();
   }
 };
 
@@ -7258,7 +7536,7 @@ ItemSet.prototype._onSelectItem = function (event) {
 
   var oldSelection = this.getSelection();
 
-  var item = ItemSet.itemFromTarget(event);
+  var item = this.itemFromTarget(event);
   var selection = item ? [item.id] : [];
   this.setSelection(selection);
 
@@ -7268,7 +7546,8 @@ ItemSet.prototype._onSelectItem = function (event) {
   // except when old selection is empty and new selection is still empty
   if (newSelection.length > 0 || oldSelection.length > 0) {
     this.body.emitter.emit('select', {
-      items: newSelection
+      items: newSelection,
+      event: event
     });
   }
 };
@@ -7284,7 +7563,7 @@ ItemSet.prototype._onAddItem = function (event) {
 
   var me = this,
       snap = this.options.snap || null,
-      item = ItemSet.itemFromTarget(event);
+      item = this.itemFromTarget(event);
 
   if (item) {
     // update item
@@ -7342,7 +7621,7 @@ ItemSet.prototype._onMultiSelectItem = function (event) {
   if (!this.options.selectable) return;
 
   var selection,
-      item = ItemSet.itemFromTarget(event);
+      item = this.itemFromTarget(event);
 
   if (item) {
     // multi select items
@@ -7364,7 +7643,9 @@ ItemSet.prototype._onMultiSelectItem = function (event) {
           var start = _item.data.start;
           var end = (_item.data.end !== undefined) ? _item.data.end : start;
 
-          if (start >= range.min && end <= range.max) {
+          if (start >= range.min &&
+              end <= range.max &&
+              !(_item instanceof BackgroundItem)) {
             selection.push(_item.id); // do not use id but item.id, id itself is stringified
           }
         }
@@ -7430,7 +7711,7 @@ ItemSet._getItemRange = function(itemsData) {
  * @param {Event} event
  * @return {Item | null} item
  */
-ItemSet.itemFromTarget = function(event) {
+ItemSet.prototype.itemFromTarget = function(event) {
   var target = event.target;
   while (target) {
     if (target.hasOwnProperty('timeline-item')) {
@@ -7449,33 +7730,23 @@ ItemSet.itemFromTarget = function(event) {
  * @return {Group | null} group
  */
 ItemSet.prototype.groupFromTarget = function(event) {
-  // TODO: cleanup when the new solution is stable (also on mobile)
-  //var target = event.target;
-  //while (target) {
-  //  if (target.hasOwnProperty('timeline-group')) {
-  //    return target['timeline-group'];
-  //  }
-  //  target = target.parentNode;
-  //}
-  //
-
-  var clientY = event.gesture.center.clientY;
+  var pageY = event.gesture ? event.gesture.center.pageY : event.pageY;
   for (var i = 0; i < this.groupIds.length; i++) {
     var groupId = this.groupIds[i];
     var group = this.groups[groupId];
     var foreground = group.dom.foreground;
     var top = util.getAbsoluteTop(foreground);
-    if (clientY > top && clientY < top + foreground.offsetHeight) {
+    if (pageY > top && pageY < top + foreground.offsetHeight) {
       return group;
     }
 
     if (this.options.orientation === 'top') {
-      if (i === this.groupIds.length - 1 && clientY > top) {
+      if (i === this.groupIds.length - 1 && pageY > top) {
         return group;
       }
     }
     else {
-      if (i === 0 && clientY < top + foreground.offset) {
+      if (i === 0 && pageY < top + foreground.offset) {
         return group;
       }
     }
@@ -7541,8 +7812,7 @@ function TimeAxis (body, options) {
   };
 
   this.defaultOptions = {
-    orientation: 'bottom',  // supported: 'top', 'bottom'
-    // TODO: implement timeaxis orientations 'left' and 'right'
+    orientation: 'bottom',  // axis orientation: 'top' or 'bottom'
     showMinorLabels: true,
     showMajorLabels: true,
     format: null,
@@ -7572,13 +7842,21 @@ TimeAxis.prototype.setOptions = function(options) {
   if (options) {
     // copy all options that we know
     util.selectiveExtend([
-      'orientation',
       'showMinorLabels',
       'showMajorLabels',
       'hiddenDates',
       'format',
       'timeAxis'
     ], this.options, options);
+
+    if ('orientation' in options) {
+      if (typeof options.orientation === 'string') {
+        this.options.orientation = options.orientation;
+      }
+      else if (typeof options.orientation === 'object' && 'axis' in options.orientation) {
+        this.options.orientation = options.orientation.axis;
+      }
+    }
 
     // apply locale to moment.js
     // TODO: not so nice, this is applied globally to moment.js
@@ -7638,9 +7916,8 @@ TimeAxis.prototype.redraw = function () {
   this._calculateCharSize();
 
   // TODO: recalculate sizes only needed when parent is resized or options is changed
-  var orientation = this.options.orientation,
-      showMinorLabels = this.options.showMinorLabels,
-      showMajorLabels = this.options.showMajorLabels;
+  var showMinorLabels = this.options.showMinorLabels;
+  var showMajorLabels = this.options.showMajorLabels;
 
   // determine the width and height of the elemens for the axis
   props.minorLabelHeight = showMinorLabels ? props.minorCharHeight : 0;
@@ -8092,6 +8369,8 @@ BackgroundItem.prototype.repositionY = function(margin) {
 
   // special positioning for subgroups
   if (this.data.subgroup !== undefined) {
+    // TODO: instead of calculating the top position of the subgroups here for every BackgroundItem, calculate the top of the subgroup once in Itemset
+
     var itemSubgroup = this.data.subgroup;
     var subgroups = this.parent.subgroups;
     var subgroupIndex = subgroups[itemSubgroup].index;
@@ -8117,15 +8396,20 @@ BackgroundItem.prototype.repositionY = function(margin) {
     // and when the orientation is bottom:
     else {
       var newTop = this.parent.top;
+      var totalHeight = 0;
       for (var subgroup in subgroups) {
         if (subgroups.hasOwnProperty(subgroup)) {
-          if (subgroups[subgroup].visible == true && subgroups[subgroup].index > subgroupIndex) {
-            newTop += subgroups[subgroup].height + margin.item.vertical;
+          if (subgroups[subgroup].visible == true) {
+            var newHeight = subgroups[subgroup].height + margin.item.vertical;
+            totalHeight += newHeight;
+            if (subgroups[subgroup].index > subgroupIndex) {
+              newTop += newHeight;
+            }
           }
         }
       }
       height = this.parent.subgroups[itemSubgroup].height + margin.item.vertical;
-      this.dom.box.style.top = newTop + 'px';
+      this.dom.box.style.top = (this.parent.height - totalHeight + newTop) + 'px';
       this.dom.box.style.bottom = '';
     }
   }
@@ -8306,9 +8590,6 @@ BoxItem.prototype.hide = function() {
     if (dom.line.parentNode)  dom.line.parentNode.removeChild(dom.line);
     if (dom.dot.parentNode)   dom.dot.parentNode.removeChild(dom.dot);
 
-    this.top = null;
-    this.left = null;
-
     this.displayed = false;
   }
 };
@@ -8321,9 +8602,6 @@ BoxItem.prototype.repositionX = function() {
   var start = this.conversion.toScreen(this.data.start);
   var align = this.options.align;
   var left;
-  var box = this.dom.box;
-  var line = this.dom.line;
-  var dot = this.dom.dot;
 
   // calculate left position of the box
   if (align == 'right') {
@@ -8338,13 +8616,13 @@ BoxItem.prototype.repositionX = function() {
   }
 
   // reposition box
-  box.style.left = this.left + 'px';
+  this.dom.box.style.left = this.left + 'px';
 
   // reposition line
-  line.style.left = (start - this.props.line.width / 2) + 'px';
+  this.dom.line.style.left = (start - this.props.line.width / 2) + 'px';
 
   // reposition dot
-  dot.style.left = (start - this.props.dot.width / 2) + 'px';
+  this.dom.dot.style.left = (start - this.props.dot.width / 2) + 'px';
 };
 
 /**
@@ -8435,6 +8713,11 @@ Item.prototype.unselect = function() {
  * @param {Object} data
  */
 Item.prototype.setData = function(data) {
+  var groupChanged = data.group != undefined && this.data.group != data.group;
+  if (groupChanged) {
+    this.parent.itemSet._moveToGroup(this, data.group);
+  }
+
   this.data = data;
   this.dirty = true;
   if (this.displayed) this.redraw();
@@ -8521,8 +8804,9 @@ Item.prototype._repaintDeleteButton = function (anchor) {
     Hammer(deleteButton, {
       preventDefault: true
     }).on('tap', function (event) {
-      me.parent.removeFromDataSet(me);
+      event.preventDefault();
       event.stopPropagation();
+      me.parent.removeFromDataSet(me);
     });
 
     anchor.appendChild(deleteButton);
@@ -8856,9 +9140,6 @@ PointItem.prototype.hide = function() {
       this.dom.point.parentNode.removeChild(this.dom.point);
     }
 
-    this.top = null;
-    this.left = null;
-
     this.displayed = false;
   }
 };
@@ -9039,30 +9320,34 @@ RangeItem.prototype.hide = function() {
       box.parentNode.removeChild(box);
     }
 
-    this.top = null;
-    this.left = null;
-
     this.displayed = false;
   }
 };
 
 /**
  * Reposition the item horizontally
+ * @param {boolean} [limitSize=true] If true (default), the width of the range
+ *                                   item will be limited, as the browser cannot
+ *                                   display very wide divs. This means though
+ *                                   that the applied left and width may
+ *                                   not correspond to the ranges start and end
  * @Override
  */
-RangeItem.prototype.repositionX = function() {
+RangeItem.prototype.repositionX = function(limitSize) {
   var parentWidth = this.parent.width;
   var start = this.conversion.toScreen(this.data.start);
   var end = this.conversion.toScreen(this.data.end);
   var contentLeft;
   var contentWidth;
 
-  // limit the width of the this, as browsers cannot draw very wide divs
-  if (start < -parentWidth) {
-    start = -parentWidth;
-  }
-  if (end > 2 * parentWidth) {
-    end = 2 * parentWidth;
+  // limit the width of the range, as browsers cannot draw very wide divs
+  if (limitSize === undefined || limitSize === true) {
+    if (start < -parentWidth) {
+      start = -parentWidth;
+    }
+    if (end > 2 * parentWidth) {
+      end = 2 * parentWidth;
+    }
   }
   var boxWidth = Math.max(end - start, 1);
 
@@ -9210,7 +9495,7 @@ exports['en_US'] = exports['en'];
 
 // Dutch
 exports['nl'] = {
-  custom: 'aangepaste',
+  current: 'aangepaste',
   time: 'tijd'
 };
 exports['nl_NL'] = exports['nl'];
@@ -9882,6 +10167,24 @@ exports.getTarget = function(event) {
   }
 
   return target;
+};
+
+/**
+ * Check if given element contains given parent somewhere in the DOM tree
+ * @param {Element} element
+ * @param {Element} parent
+ */
+exports.hasParent = function (element, parent) {
+  var e = element;
+
+  while (e) {
+    if (e === parent) {
+      return true;
+    }
+    e = e.parentNode;
+  }
+
+  return false;
 };
 
 exports.option = {};
