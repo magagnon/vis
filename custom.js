@@ -4,7 +4,7 @@
  * We only need support for datasets and timelines
  *
  * Built using browserify:
- * browserify custom.js -o dist/vis-hexoskin.js -s vis -x moment
+ * custom.js -t babelify -o dist/vis-hexoskin.js -s vis -x moment
  *
  */
 
