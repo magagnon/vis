@@ -2,6 +2,70 @@
 http://visjs.org
 
 
+## 2015-04-07, version 3.12.0
+
+### Network
+
+- Fixed support for DataSet with custom id fields (option `fieldId`).
+
+### Timeline
+
+- Orientation can now be configured separately for axis and items.
+- The event handlers `onMove` and `onMoving` are now invoked with all item
+  properties as argument, and can be used to update all properties (like
+  content, className, etc) and add new properties as well.
+- Fixed #654: removed unnecessary minimum height for groups, takes the
+  height of the group label as minimum height now.
+- Fixed #708: detecting wrong group when page is scrolled.
+- Fixed #733: background items being selected on shift+click.
+
+
+## 2015-03-05, version 3.11.0
+
+### Network
+
+- (added gradient coloring for lines, but set for release in 4.0 due to required refactoring of options)
+- Fixed bug where a network that has frozen physics would resume redrawing after setData, setOptions etc.
+- Added option to bypass default groups. If more groups are specified in the nodes than there are in the groups, loop over supplied groups instead of default.
+- Added two new static smooth curves modes: curveCW and curve CCW.
+- Added request redraw for certain internal processes to reduce number of draw calls (performance improvements!).
+- Added pull request for usage of Icons. Thanks @Dude9177!
+- Allow hierarchical view to be set in setOptions.
+- Fixed manipulation bar for mobile.
+- Fixed #670: Bug when updating data in a DataSet, when Network is connected to the DataSet via a DataView.
+- Fixed #688: Added a css class to be able to distinguish buttons "Edit node"
+  and "Edit edge".
+
+### Timeline
+
+- Implemented orientation option `'both'`, displaying a time axis both on top
+  and bottom (#665).
+- Implemented creating new range items by dragging in an empty space with the
+  ctrl key down.
+- Implemented configuration option `order: function` to define a custom ordering
+  for the items (see #538, #234).
+- Implemented events `click`, `doubleClick`, and `contextMenu`.
+- Implemented method `getEventProperties(event)`.
+- Fixed not property initializing with a DataView for groups.
+- Merged add custom timebar functionality, thanks @aytech!
+- Fixed #664: end of item not restored when canceling a move event.
+- Fixed #609: reduce the left/right dragarea when an item range is very small,
+  so you can still move it as a whole.
+- Fixed #676: misalignment of background items when using subgroups and the
+  group label's height is larger than the contents.
+
+### Graph2d
+
+- Implemented events `click`, `doubleClick`, and `contextMenu`.
+- Implemented method `getEventProperties(event)`.
+
+### DataSet/DataView
+
+- Implemented support for mapping field names. Thanks @spatialillusions.
+- Fixed #670: DataView not passing a data property on update events (see #670)
+
+
+
 ## 2015-02-11, version 3.10.0
 
 ### Network
