@@ -8,6 +8,10 @@
  *
  */
 
+// utils
+exports.util = require('./lib/util');
+exports.DOMutil = require('./lib/DOMutil');
+
 // data
 exports.DataSet = require('./lib/DataSet');
 
